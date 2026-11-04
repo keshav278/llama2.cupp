@@ -535,8 +535,18 @@ int main(int argc, char *argv[]) {
     int num_prompt_tokens = 0;
     if (prompt != NULL) {
         prompt_tokens = (int*)malloc(config.seq_len * sizeof(int));
+        long encode_start = time_in_ms();
         bpe_encode(prompt, vocab, vocab_scores, config.vocab_size, max_token_length, prompt_tokens, &num_prompt_tokens);
+        long encode_end = time_in_ms();
+        printf("%ld time for encoding\n", encode_end - encode_start);
     }
+
+    //print the encoded tokens
+    printf("%d tokens:\n", num_prompt_tokens);
+    for (int i = 0; i < num_prompt_tokens; i++) {
+        printf("%d ",prompt_tokens[i]);
+    }
+    printf("\n");
 
     // start the main loop
     long start = 0;  // used to time our code, only initialized after first iteration
