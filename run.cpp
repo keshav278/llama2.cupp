@@ -69,7 +69,7 @@ struct TransformerWeights {
 struct RunContext {
 
     std::vector<float> x; // current token's main representation (dim,)
-    std::vector<float> xb; // current token's residual branch (dim,)
+    std::vector<float> xb; // current token's residual branch which goes through attn (dim,)
     std::vector<float> xb2; // an additional buffer just for convenience (dim,)
 
     std::vector<float> hb; // buffer for hidden dimension in the ffn (hidden_dim,) gated branch
@@ -220,6 +220,38 @@ void bpe_encode(char* prompt, std::vector<std::string>& vocab, std::vector<float
     return;
 }
 
+void rmsnorm(std::vector<float>& xb, std::vector<float>& x, float* rms_attn_l) {
+
+    // calculate root mean square 
+    // RMS(x) = sqrt((x_1^2 + x_2^2 ... + x_dim^2) / n) 
+    float rms = 0.0f;
+    for(auto a : x){
+        rms += a*a;
+    }
+    auto dim = x.size();
+    // rms = sqrt(rms / (1.0f * dim));
+
+    // // normalize x with RMS, scale with per-dim rms weight gamma
+    // // RMSNorm(x_i) = gamma_i * x_i / RMS(x)
+    // for(int i = 0; i < dim; i++) {
+    //     xb[i] = *(rms_attn_l + i) * x[i];
+    //     xb[i] /= rms;
+    // }
+
+    // corrections to above logic
+    // repeated division -> bad
+    // if RMS = 0, /=rms  will be undefined, add epsilon
+
+    rms /= dim;
+    rms += 1e-5f;
+    auto inv_rms = 1.0f / std::sqrt(rms);
+
+    for(int i = 0; i < dim; i++) {
+        xb[i] = *(rms_attn_l + i) * x[i] * inv_rms;
+    }
+    return;
+}
+
 void transformer(int token, int pos, Config* config, RunContext* ctx, TransformerWeights* weights) {
 
     // token to vector embedding, store in x
@@ -242,6 +274,8 @@ void transformer(int token, int pos, Config* config, RunContext* ctx, Transforme
     // subsequent layer needs output x of previous layer
     for (int l = 0; l < config->n_layers; l++) {
 
+        //attention rmsnorm
+        rmsnorm(ctx->xb, ctx->x, weights->rms_att_weight + l * dim);
     }
     return;
 }
