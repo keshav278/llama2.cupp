@@ -75,7 +75,7 @@ struct RunContext {
     std::vector<float> hb; // buffer for hidden dimension in the ffn (hidden_dim,) gated branch
     std::vector<float> hb2; // buffer for hidden dimension in the ffn (hidden_dim,) other branch
 
-    // Q,K,V for the whole attention block, key and value being (dim,) and not (n_kv_heads * head_dim,)
+    // Q,K,V for the current layer's attention block, key and value being (dim,) and not (n_kv_heads * head_dim,)
     // indicates standard MHA
     std::vector<float> q; // query (dim,)
     std::vector<float> k; // key (dim,)
@@ -252,6 +252,23 @@ void rmsnorm(std::vector<float>& xb, std::vector<float>& x, float* rms_attn_l) {
     return;
 }
 
+// not a general matmul, one of the matrices is a vector, other is weight matrix
+// out (dim_out x 1) = W(dim_out x dim_in) @ in(dim_in x 1)
+void matmul(std::vector<float>& out, std::vector<float>& in, float* w, int dim_in, int dim_out) {
+    
+    // each row is computed independently, so can be parallelized
+    #pragma omp parallel for private(i)
+    for(int i = 0; i < dim_out; i++) {
+        float dot_prod = 0.0f;
+        //for(int j = 0; j < 1; j++) {
+            for(int k = 0; k < dim_in; k++) {
+                dot_prod += *(w + /*j*/i*dim_in + k) * in[k];
+            }
+        //}
+        out[i] = dot_prod;
+    }
+}
+
 void transformer(int token, int pos, Config* config, RunContext* ctx, TransformerWeights* weights) {
 
     // token to vector embedding, store in x
@@ -274,8 +291,18 @@ void transformer(int token, int pos, Config* config, RunContext* ctx, Transforme
     // subsequent layer needs output x of previous layer
     for (int l = 0; l < config->n_layers; l++) {
 
-        //attention rmsnorm
+        // attention rmsnorm
         rmsnorm(ctx->xb, ctx->x, weights->rms_att_weight + l * dim);
+
+        // qkv matmuls to get the big Q, K, V matrices
+        // Q_l = Wq_l @ xb where xb is (dim,), Wq_l is (dim,dim) for the current layer
+        // so weights retrieved by l 
+        // similar for K and V
+        matmul(ctx->q, ctx->xb, weights->wq + l * dim * dim, dim, dim);
+        matmul(ctx->k, ctx->xb, weights->wk + l * dim * dim, dim, dim);
+        matmul(ctx->v, ctx->xb, weights->wv + l * dim * dim, dim, dim);
+
+
     }
     return;
 }
