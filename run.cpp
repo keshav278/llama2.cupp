@@ -282,7 +282,7 @@ void transformer(int token, int pos, Config* config, RunContext* ctx, Transforme
     int head_size = dim / config->n_heads;
 
     // rotary positional embeddings values for pos
-    // rotation looks like cos(theta) + i.sin(theta), real stores cosine terms, imag stores sine terms
+    // rotation looks like cos(theta) +- i.sin(theta), real stores cosine terms, imag stores sine terms
     // RoPE discussed further below
     auto freq_cis_real_row = weights->freq_cis_real + pos * head_size / 2;
     auto freq_cis_imag_row = weights->freq_cis_imag + pos * head_size / 2;
@@ -294,7 +294,7 @@ void transformer(int token, int pos, Config* config, RunContext* ctx, Transforme
         // attention rmsnorm
         rmsnorm(ctx->xb, ctx->x, weights->rms_att_weight + l * dim);
 
-        // qkv matmuls to get the big Q, K, V matrices
+        // qkv matmuls to get the big Q, K, V matrices for each layer
         // Q_l = Wq_l @ xb where xb is (dim,), Wq_l is (dim,dim) for the current layer
         // so weights retrieved by l 
         // similar for K and V
@@ -302,6 +302,39 @@ void transformer(int token, int pos, Config* config, RunContext* ctx, Transforme
         matmul(ctx->k, ctx->xb, weights->wk + l * dim * dim, dim, dim);
         matmul(ctx->v, ctx->xb, weights->wv + l * dim * dim, dim, dim);
 
+        // apply RoPE for Q and K vectors for each head, this is not computed per layer
+        // so suppose query for pos m gets rotated by theta_m, key for pos n gets rotated by theta_n
+        // attention later is computed from dot product of rotated query and key
+        // Q(theta_m) . K(theta_n) simplifies to Q . (theta_m - theta_n) K
+        // theta_m - theta_n = frequency . (m - n), where frequency_i = 10000^(-2(i-1)/head_size)
+        // angle = pos × frequency_for_this_dimension_pair
+        // freq_cis_real_row[pair] = cos(angle)
+        // freq_cis_imag_row[pair] = sin(angle)
+        // so freq_cis_real and freq_cis_imag scale based on position
+        // and the relative position (m - n) is encoded in the attention dot product to learn patterns
+        for (int h = 0; h < config->n_heads; h++) {
+            // get q and k vector base for current head
+            int qk_start = h * head_size;
+            // rotate (q_i,q_i+1) and (k_i,k_i+1) by freq_cis_real and freq_cis_imag
+            // i grows by 2, so the cos and sin terms need to be indexed with i/2 to grow by 1
+            for (int i = 0; i < head_size; i+=2) {
+                float q0 = ctx->q[qk_start + i];
+                float q1 = ctx->q[qk_start + i + 1];
+                float k0 = ctx->k[qk_start + i];
+                float k1 = ctx->k[qk_start + i + 1];
+                float freq_r = freq_cis_real_row[i/2];
+                float freq_i = freq_cis_imag_row[i/2];
+                ctx->q[qk_start + i] = q0 * freq_r - q1 * freq_i;
+                ctx->q[qk_start + i + 1] = q0 * freq_i + q1 * freq_r;
+                ctx->k[qk_start + i] = k0 * freq_r - k1 * freq_i;
+                ctx->k[qk_start + i + 1] = k0 * freq_i + k1 * freq_r;
+            }
+        }
+
+        //save key, value for this position to kv cache
+        int layer_offset = l * config->seq_len * dim;
+        std::copy_n(ctx->k.begin(), ctx->k.end(), ctx->key_cache.begin() + layer_offset + pos * dim);
+        std::copy_n(ctx->v.begin(), ctx->v.end(), ctx->value_cache.begin() + layer_offset + pos * dim);
 
     }
     return;
