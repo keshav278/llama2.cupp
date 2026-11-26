@@ -257,8 +257,9 @@ void rmsnorm(std::vector<float>& xb, std::vector<float>& x, float* rms_attn_l) {
 void matmul(std::vector<float>& out, std::vector<float>& in, float* w, int dim_in, int dim_out) {
     
     // each row is computed independently, so can be parallelized
+    int i;
     #pragma omp parallel for private(i)
-    for(int i = 0; i < dim_out; i++) {
+    for(i = 0; i < dim_out; i++) {
         float dot_prod = 0.0f;
         //for(int j = 0; j < 1; j++) {
             for(int k = 0; k < dim_in; k++) {
@@ -333,8 +334,8 @@ void transformer(int token, int pos, Config* config, RunContext* ctx, Transforme
 
         //save key, value for this position to kv cache
         int layer_offset = l * config->seq_len * dim;
-        std::copy_n(ctx->k.begin(), ctx->k.end(), ctx->key_cache.begin() + layer_offset + pos * dim);
-        std::copy_n(ctx->v.begin(), ctx->v.end(), ctx->value_cache.begin() + layer_offset + pos * dim);
+        std::copy_n(ctx->k.begin(), dim, ctx->key_cache.begin() + layer_offset + pos * dim);
+        std::copy_n(ctx->v.begin(), dim, ctx->value_cache.begin() + layer_offset + pos * dim);
 
     }
     return;
